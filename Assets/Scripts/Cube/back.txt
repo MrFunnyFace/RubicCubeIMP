@@ -1,0 +1,243 @@
+using UnityEngine;
+using System.Collections.Generic;
+
+public class Cubie : MonoBehaviour
+{
+    public Vector3Int Index { get; private set; }
+
+    [System.Serializable]
+    public class Face
+    {
+        public CubeFace face;
+        public Renderer renderer;
+    }
+
+    public List<Face> faces = new();
+
+    public void Init(Vector3Int index)
+    {
+        SetIndex(index);
+    }
+
+    public void SetIndex(Vector3Int index)
+    {
+        Index = index;
+        name = $"Cubie [{index.x},{index.y},{index.z}]";
+    }
+
+    public void SetFaceColor(CubeFace face, Material mat)
+    {
+        foreach (var f in faces)
+            if (f.face == face)
+                f.renderer.material = mat;
+    }
+
+    public void Select()
+    {
+        foreach (var f in faces)
+            f.renderer.material.EnableKeyword("_EMISSION");
+    }
+
+    public void Deselect()
+    {
+        foreach (var f in faces)
+            f.renderer.material.DisableKeyword("_EMISSION");
+    }
+}
+
+using UnityEngine;
+using System.Collections.Generic;
+
+public class RubikCubeGenerator : MonoBehaviour
+{
+    [Header("Prefabs & Materials")]
+    public Cubie cubiePrefab;
+    public Material white, yellow, red, orange, blue, green;
+
+    [Header("Cube Settings")]
+    [Range(2, 4)]
+    public int cubeSize = 3;
+    public float cubieSize = 1f;
+    public float spacing = 0.05f;
+
+    [Header("Visual Root")]
+    public Transform cubeVisualRoot;
+
+    [HideInInspector]
+    public List<Cubie> cubies = new();
+
+    private void Start()
+    {
+        if (GameManager.Instance != null)
+            cubeSize = Mathf.Clamp(GameManager.Instance.SelectedCubeSize, 2, 4);
+
+        GenerateCube();
+    }
+
+    public void GenerateCube()
+    {
+        ClearOldCube();
+
+        int max = cubeSize - 1;
+        float offset = (cubeSize - 1) / 2f;
+
+        for (int x = 0; x < cubeSize; x++)
+            for (int y = 0; y < cubeSize; y++)
+                for (int z = 0; z < cubeSize; z++)
+                {
+                    Cubie c = Instantiate(cubiePrefab, cubeVisualRoot);
+                    c.transform.localPosition = new Vector3(
+                        (x - offset) * (cubieSize + spacing),
+                        (y - offset) * (cubieSize + spacing),
+                        (z - offset) * (cubieSize + spacing)
+                    );
+                    c.transform.localRotation = Quaternion.identity;
+                    c.transform.localScale = Vector3.one * cubieSize;
+                    c.Init(new Vector3Int(x, y, z));
+
+                    if (x == 0) c.SetFaceColor(CubeFace.Left, blue);
+                    if (x == max) c.SetFaceColor(CubeFace.Right, green);
+                    if (y == 0) c.SetFaceColor(CubeFace.Down, yellow);
+                    if (y == max) c.SetFaceColor(CubeFace.Up, white);
+                    if (z == 0) c.SetFaceColor(CubeFace.Back, orange);
+                    if (z == max) c.SetFaceColor(CubeFace.Front, red);
+
+                    cubies.Add(c);
+                }
+    }
+
+    private void ClearOldCube()
+    {
+        cubies.Clear();
+        for (int i = cubeVisualRoot.childCount - 1; i >= 0; i--)
+            Destroy(cubeVisualRoot.GetChild(i).gameObject);
+    }
+
+    public Vector3 GetLocalPositionFromIndex(Vector3Int index)
+    {
+        float offset = (cubeSize - 1) / 2f;
+        return new Vector3(
+            (index.x - offset) * (cubieSize + spacing),
+            (index.y - offset) * (cubieSize + spacing),
+            (index.z - offset) * (cubieSize + spacing)
+        );
+    }
+}
+
+using UnityEngine;
+using UnityEngine.InputSystem;
+using System.Collections;
+using System.Collections.Generic;
+public class RubikCubeController : MonoBehaviour
+{
+    public float rotationDuration = 0.3f; 
+    private bool isRotating; 
+    private RubikCubeGenerator generator; 
+    public Cubie SelectedCubie; 
+    void Awake() 
+    { 
+        generator = GetComponent<RubikCubeGenerator>();
+    }
+    void Update() 
+    { 
+        HandleSelection(); 
+    }
+    void HandleSelection() 
+    { 
+        if (isRotating) 
+            return; 
+        if (!Mouse.current.leftButton.wasPressedThisFrame) 
+            return; 
+        Ray ray = Camera.main.ScreenPointToRay(Mouse.current.position.ReadValue());
+        if (!Physics.Raycast(ray, out RaycastHit hit)) return; Cubie cubie = hit.collider.GetComponentInParent<Cubie>();
+        if (cubie == null) 
+            return; SelectedCubie?.Deselect(); 
+        SelectedCubie = cubie; SelectedCubie.Select(); 
+    }
+    public void Rotate(CubeAxis axis, bool clockwise)
+    {
+        if (isRotating || SelectedCubie == null) return;
+        // ќпредел€ем слой по выбранной координате кубика
+        int layer = axis switch 
+        {
+            CubeAxis.X => SelectedCubie.Index.x,
+            CubeAxis.Y => SelectedCubie.Index.y, 
+            CubeAxis.Z => SelectedCubie.Index.z, _ => 0 
+        }; 
+        StartCoroutine(RotateLayer(axis, layer, clockwise)); 
+    } 
+    IEnumerator RotateLayer(CubeAxis axis, int layer, bool clockwise) 
+    { 
+        isRotating = true; 
+
+        List<Cubie> layerCubies = GetLayerCubies(axis, layer); 
+
+        GameObject pivot = new GameObject("Pivot"); 
+        pivot.transform.SetParent(generator.cubeVisualRoot, false); 
+
+        foreach (var c in layerCubies)
+            c.transform.SetParent(pivot.transform, true); 
+
+        Vector3 axisVec = axis switch 
+        { 
+            CubeAxis.X => Vector3.right,
+            CubeAxis.Y => Vector3.up, 
+            CubeAxis.Z => Vector3.forward,
+            _ => Vector3.zero 
+        }; 
+
+        float angle = clockwise ? -90f : 90f;
+
+        Quaternion start = pivot.transform.localRotation; 
+        Quaternion end = Quaternion.AngleAxis(angle, axisVec) * start;
+        
+        float t = 0f;
+       
+        while (t < 1f) 
+        { 
+            t += Time.deltaTime / rotationDuration; 
+            pivot.transform.localRotation = Quaternion.Slerp(start, end, t); 
+            yield return null; 
+        } 
+      
+        pivot.transform.localRotation = end; 
+        
+        foreach (var c in layerCubies) 
+            c.transform.SetParent(generator.cubeVisualRoot, true);
+       
+        UpdateIndices(layerCubies, axis, clockwise); Destroy(pivot);
+        
+        isRotating = false; 
+    }
+    List<Cubie> GetLayerCubies(CubeAxis axis, int layer)
+    { 
+        return generator.cubies.FindAll(c => 
+        axis switch 
+        { 
+            CubeAxis.X => c.Index.x == layer,
+            CubeAxis.Y => c.Index.y == layer, 
+            CubeAxis.Z => c.Index.z == layer, 
+            _ => false } ); 
+    } 
+    void UpdateIndices(List<Cubie> cubies, CubeAxis axis, bool cw) 
+    { 
+        int max = generator.cubeSize - 1; 
+        foreach (var c in cubies) 
+        {
+            Vector3Int i = c.Index; 
+            Vector3Int newIndex = axis switch 
+            { 
+                CubeAxis.X => cw ? new(i.x, max - i.z, i.y) : new(i.x, i.z, max - i.y), 
+                CubeAxis.Y => cw ? new(max - i.z, i.y, i.x) : new(i.z, i.y, max - i.x),
+                CubeAxis.Z => cw ? new(i.y, max - i.x, i.z) : new(max - i.y, i.x, i.z), _ => i
+            };
+            c.SetIndex(newIndex); 
+        }
+    } 
+    public void RotateX_CW() => Rotate(CubeAxis.X, true); 
+    public void RotateX_CCW() => Rotate(CubeAxis.X, false); 
+    public void RotateY_CW() => Rotate(CubeAxis.Y, true); 
+    public void RotateY_CCW() => Rotate(CubeAxis.Y, false); 
+    public void RotateZ_CW() => Rotate(CubeAxis.Z, true); 
+    public void RotateZ_CCW() => Rotate(CubeAxis.Z, false); 
+}
